@@ -1,0 +1,295 @@
+name: Auto Build Minecraft Mod
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Create Project Structure
+      run: |
+        mkdir -p src/main/java/com/autobridge
+        mkdir -p src/main/resources/assets/autobridge/lang
+        mkdir -p gradle/wrapper
+        
+    - name: Create AutoBridgeMod.java
+      run: |
+        cat > src/main/java/com/autobridge/AutoBridgeMod.java << 'EOF'
+        package com.autobridge;
+
+        import net.fabricmc.api.ClientModInitializer;
+        import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+        import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+        import net.minecraft.client.MinecraftClient;
+        import net.minecraft.client.options.KeyBinding;
+        import net.minecraft.client.util.InputUtil;
+        import net.minecraft.text.LiteralText;
+        import net.minecraft.text.Text;
+        import net.minecraft.util.hit.BlockHitResult;
+        import net.minecraft.util.math.BlockPos;
+        import net.minecraft.util.math.Direction;
+        import net.minecraft.util.math.Vec3d;
+        import net.minecraft.item.BlockItem;
+        import net.minecraft.item.ItemStack;
+        import net.minecraft.util.Hand;
+        import net.minecraft.util.ActionResult;
+
+        public class AutoBridgeMod implements ClientModInitializer {
+            
+            public static final String MOD_ID = "autobridge";
+            private static boolean enabled = false;
+            private static KeyBinding toggleKey;
+            private static KeyBinding placeKey;
+            
+            @Override
+            public void onInitializeClient() {
+                toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                    "key.autobridge.toggle",
+                    InputUtil.Type.KEYSYM,
+                    InputUtil.GLFW_KEY_B,
+                    "category.autobridge"
+                ));
+                
+                placeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                    "key.autobridge.place",
+                    InputUtil.Type.KEYSYM,
+                    InputUtil.GLFW_KEY_V,
+                    "category.autobridge"
+                ));
+                
+                ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                    if (client.player == null || client.world == null) return;
+                    
+                    while (toggleKey.wasPressed()) {
+                        enabled = !enabled;
+                        Text message = new LiteralText(
+                            enabled ? "§a[AutoBridge] §fEnabled ✓" : "§c[AutoBridge] §fDisabled ✗"
+                        );
+                        client.player.sendMessage(message, true);
+                    }
+                    
+                    if (enabled && placeKey.isPressed()) {
+                        tryPlaceBridge(client);
+                    }
+                });
+            }
+            
+            private void tryPlaceBridge(MinecraftClient client) {
+                if (client.player == null || client.world == null || client.interactionManager == null) {
+                    return;
+                }
+                
+                Vec3d lookVec = client.player.getRotationVec(1.0F);
+                BlockPos playerBlockPos = client.player.getBlockPos();
+                
+                int offsetX = 0;
+                int offsetZ = 0;
+                
+                if (Math.abs(lookVec.x) > Math.abs(lookVec.z)) {
+                    offsetX = lookVec.x > 0 ? 1 : -1;
+                } else {
+                    offsetZ = lookVec.z > 0 ? 1 : -1;
+                }
+                
+                BlockPos targetPos = playerBlockPos.add(offsetX, -1, offsetZ);
+                
+                if (!client.world.getBlockState(targetPos).isAir()) {
+                    return;
+                }
+                
+                ItemStack mainHand = client.player.getMainHandStack();
+                ItemStack offHand = client.player.getOffHandStack();
+                Hand selectedHand = Hand.MAIN_HAND;
+                ItemStack selectedStack = mainHand;
+                
+                if (!(mainHand.getItem() instanceof BlockItem)) {
+                    if (offHand.getItem() instanceof BlockItem) {
+                        selectedHand = Hand.OFF_HAND;
+                        selectedStack = offHand;
+                    } else {
+                        for (int i = 0; i < 9; i++) {
+                            ItemStack stack = client.player.inventory.getStack(i);
+                            if (stack.getItem() instanceof BlockItem) {
+                                client.player.inventory.selectedSlot = i;
+                                selectedStack = stack;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if (!(selectedStack.getItem() instanceof BlockItem)) {
+                    return;
+                }
+                
+                try {
+                    BlockPos placeOn = targetPos.down();
+                    if (client.world.getBlockState(placeOn).isAir()) {
+                        placeOn = targetPos;
+                    }
+                    
+                    BlockHitResult hitResult = new BlockHitResult(
+                        Vec3d.ofCenter(targetPos),
+                        Direction.UP,
+                        placeOn,
+                        false
+                    );
+                    
+                    ActionResult result = client.interactionManager.interactBlock(
+                        client.player,
+                        client.world,
+                        selectedHand,
+                        hitResult
+                    );
+                    
+                    if (result.isAccepted()) {
+                        client.player.swingHand(selectedHand);
+                    }
+                } catch (Exception e) {
+                }
+            }
+        }
+        EOF
+        
+    - name: Create fabric.mod.json
+      run: |
+        cat > src/main/resources/fabric.mod.json << 'EOF'
+        {
+          "schemaVersion": 1,
+          "id": "autobridge",
+          "version": "1.0.0",
+          "name": "Auto Bridge Mod",
+          "description": "Automatically place blocks to walk on",
+          "authors": ["AutoBuilder"],
+          "license": "MIT",
+          "environment": "client",
+          "entrypoints": {
+            "client": ["com.autobridge.AutoBridgeMod"]
+          },
+          "depends": {
+            "fabricloader": ">=0.11.3",
+            "fabric": "*",
+            "minecraft": "1.16.5"
+          }
+        }
+        EOF
+        
+    - name: Create en_us.json
+      run: |
+        cat > src/main/resources/assets/autobridge/lang/en_us.json << 'EOF'
+        {
+          "key.autobridge.toggle": "Toggle Auto Bridge",
+          "key.autobridge.place": "Place Bridge Block",
+          "category.autobridge": "Auto Bridge Mod"
+        }
+        EOF
+        
+    - name: Create build.gradle
+      run: |
+        cat > build.gradle << 'EOF'
+        plugins {
+            id 'fabric-loom' version '0.10-SNAPSHOT'
+            id 'maven-publish'
+        }
+
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+
+        archivesBaseName = "autobridge"
+        version = "1.0.0"
+        group = "com.autobridge"
+
+        repositories {
+            maven { url 'https://maven.fabricmc.net/' }
+        }
+
+        dependencies {
+            minecraft "com.mojang:minecraft:1.16.5"
+            mappings "net.fabricmc:yarn:1.16.5+build.10:v2"
+            modImplementation "net.fabricmc:fabric-loader:0.11.3"
+            modImplementation "net.fabricmc.fabric-api:fabric-api:0.42.0+1.16"
+        }
+
+        processResources {
+            inputs.property "version", version
+            filesMatching("fabric.mod.json") {
+                expand "version": version
+            }
+        }
+
+        tasks.withType(JavaCompile).configureEach {
+            it.options.encoding = "UTF-8"
+            it.options.release = 8
+        }
+
+        java {
+            withSourcesJar()
+        }
+        EOF
+        
+    - name: Create settings.gradle
+      run: |
+        cat > settings.gradle << 'EOF'
+        pluginManagement {
+            repositories {
+                maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+                gradlePluginPortal()
+            }
+        }
+        rootProject.name = 'autobridge'
+        EOF
+        
+    - name: Create gradle.properties
+      run: |
+        cat > gradle.properties << 'EOF'
+        org.gradle.jvmargs=-Xmx2G
+        org.gradle.parallel=true
+        EOF
+        
+    - name: Download Gradle Wrapper
+      run: |
+        curl -L https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.properties -o gradle/wrapper/gradle-wrapper.properties
+        curl -L https://raw.githubusercontent.com/gradle/gradle/master/gradlew -o gradlew
+        curl -L https://raw.githubusercontent.com/gradle/gradle/master/gradlew.bat -o gradlew.bat
+        chmod +x gradlew
+        
+    - name: Setup Gradle Wrapper Properties
+      run: |
+        cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+        distributionBase=GRADLE_USER_HOME
+        distributionPath=wrapper/dists
+        distributionUrl=https\://services.gradle.org/distributions/gradle-7.3-bin.zip
+        zipStoreBase=GRADLE_USER_HOME
+        zipStorePath=wrapper/dists
+        EOF
+        
+    - name: Setup JDK 8
+      uses: actions/setup-java@v4
+      with:
+        java-version: '8'
+        distribution: 'temurin'
+        cache: 'gradle'
+        
+    - name: Build with Gradle
+      run: ./gradlew build --no-daemon --stacktrace
+      
+    - name: Upload Mod JAR
+      uses: actions/upload-artifact@v4
+      with:
+        name: AutoBridge-Mod-1.16.5
+        path: build/libs/*-1.0.0.jar
+        if-no-files-found: error
+        retention-days: 90
+        
+    - name: List Build Output
+      if: always()
+      run: ls -lah build/libs/ || echo "Build folder not found"
